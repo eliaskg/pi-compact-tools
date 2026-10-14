@@ -58,13 +58,13 @@ import { highlightMarkdown } from "../extensions/compact-tools-markdown.ts";
 import { completionPainter, paintChrome } from "../extensions/compact-tools-palette.ts";
 import { ToolRuntime } from "../extensions/compact-tools-runtime.ts";
 import {
-	classifyThinkingToggleInput,
-	hasThinkingDetail,
-	nextThinkingPhase,
-	renderThinkingView,
-	thinkingViewForPhase,
-	ThinkingCycleController,
-	type ThinkingPhase,
+	ThinkingViewController,
+	clearThinkingTimings,
+	formatThinkingDuration,
+	installThinkingCollapse,
+	noteThinkingEvent,
+	setCollapseTheme,
+	thinkingDurationFor,
 } from "../extensions/compact-tools-thinking.ts";
 import { SUPPORTED_TOOLS, type BuiltInDefinition, type RowState } from "../extensions/compact-tools-types.ts";
 import { fakeTheme, hostResolvesColors, rgb } from "./theme-fixture.ts";
@@ -1172,27 +1172,103 @@ test("caches expanded container lines by width", () => {
 	assert.equal(renders, 3);
 });
 
-test("cycles summary, detail, summary, and hidden in order", () => {
-	let phase: ThinkingPhase = "summary";
-	const views = [];
-	for (let index = 0; index < 4; index++) {
-		phase = nextThinkingPhase(phase);
-		views.push(thinkingViewForPhase(phase));
-	}
-	assert.deepEqual(views, ["detail", "summary", "hidden", "summary"]);
+test("reads a thinking duration as a short sentence", () => {
+	assert.equal(formatThinkingDuration(300), "under a second");
+	assert.equal(formatThinkingDuration(1000), "1 second");
+	assert.equal(formatThinkingDuration(12000), "12 seconds");
+	assert.equal(formatThinkingDuration(80000), "1m 20s");
+	assert.equal(formatThinkingDuration(185000), "3m 5s");
+	assert.equal(formatThinkingDuration(120000), "2m");
 });
 
-test("ignores Ctrl+T repeat and release events on Kitty terminals", () => {
-	assert.equal(classifyThinkingToggleInput("\x14"), "toggle");
-	assert.equal(classifyThinkingToggleInput("\x1b[116;5u"), "toggle");
-	assert.equal(classifyThinkingToggleInput("\x1b[116;5:2u"), "repeat");
-	assert.equal(classifyThinkingToggleInput("\x1b[116;5:3u"), "release");
-	assert.equal(classifyThinkingToggleInput("x"), undefined);
+test("measures a finished thinking run and finds it by its text", () => {
+	clearThinkingTimings();
+	const message = {
+		id: "msg-1",
+		content: [
+			{ type: "thinking", thinking: "## Plan\n\nStep one" },
+			{ type: "text", text: "Answer" },
+		],
+	};
+	noteThinkingEvent(message, { type: "thinking_start", contentIndex: 0 }, 1000);
+	assert.equal(thinkingDurationFor("## Plan\n\nStep one"), undefined, "a run without its end has no duration");
+	noteThinkingEvent(message, { type: "thinking_end", contentIndex: 0 }, 4000);
+	assert.equal(thinkingDurationFor("## Plan\n\nStep one"), 3000);
+	assert.equal(thinkingDurationFor("Unrelated"), undefined);
 });
 
-test("leaves Ctrl+T to Pi's visibility toggle when thinking has no detail", () => {
-	let transform: ((markdown: string, context: any) => string) | undefined;
-	let terminalInput: ((data: string) => { consume?: boolean } | undefined) | undefined;
+test("sums a run of several thinking blocks into one duration", () => {
+	clearThinkingTimings();
+	const message = {
+		id: "msg-2",
+		content: [
+			{ type: "thinking", thinking: "First" },
+			{ type: "thinking", thinking: "Second" },
+			{ type: "text", text: "Answer" },
+		],
+	};
+	noteThinkingEvent(message, { type: "thinking_start", contentIndex: 0 }, 0);
+	noteThinkingEvent(message, { type: "thinking_end", contentIndex: 0 }, 2000);
+	noteThinkingEvent(message, { type: "thinking_start", contentIndex: 1 }, 2000);
+	noteThinkingEvent(message, { type: "thinking_end", contentIndex: 1 }, 2500);
+	assert.equal(thinkingDurationFor("First\n\nSecond"), 2500);
+});
+
+test("collapses a finished thinking run and expands it on click", () => {
+	clearThinkingTimings();
+	assert.ok(installThinkingCollapse(), "the host still has the expected shape");
+	const message = {
+		id: "msg-3",
+		content: [
+			{ type: "thinking", thinking: "## Plan\n\nInspect the renderer.\nKeep the cache." },
+			{ type: "text", text: "Answer" },
+		],
+	};
+	noteThinkingEvent(message, { type: "thinking_start", contentIndex: 0 }, 0);
+	noteThinkingEvent(message, { type: "thinking_end", contentIndex: 0 }, 5000);
+	setCollapseTheme(fakeTheme({
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+		italic: (text: string) => text,
+	}));
+	const component = new AssistantMessageComponent(message as never);
+	const plain = (lines: string[]) => lines.map((line) => stripTerminalSequences(line).trim()).filter(Boolean);
+	assert.deepEqual(plain(component.render(80)), ["Thought for 5 seconds", "Answer"],
+		"a finished run reads as one line");
+	// Expand: the click region now owns the collapse, so dispatch a click.
+	const region = (component as unknown as { contentContainer: { children: unknown[] } }).contentContainer.children
+		.find((child) => child instanceof MouseRegion) as { handleMouse(event: unknown): unknown };
+	assert.ok(region, "the one-liner sits in a click region");
+	region.handleMouse({ type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0, width: 80, height: 1, shift: false, alt: false, ctrl: false });
+	const expanded = plain(component.render(80)).join("\n");
+	assert.ok(expanded.includes("Plan"), "the full text returns");
+	assert.ok(expanded.includes("Inspect the renderer."), "detail included");
+	region.handleMouse({ type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0, width: 80, height: 1, shift: false, alt: false, ctrl: false });
+	assert.deepEqual(plain(component.render(80)), ["Thought for 5 seconds", "Answer"],
+		"a second click compacts again");
+	assert.equal(message.content[0]!.thinking, "## Plan\n\nInspect the renderer.\nKeep the cache.",
+		"the session's thinking text is never modified");
+});
+
+test("leaves streaming and unmeasured thinking runs to the host", () => {
+	clearThinkingTimings();
+	const message = {
+		id: "msg-4",
+		content: [
+			{ type: "thinking", thinking: "## Plan\n\nStep one" },
+			{ type: "text", text: "Answer" },
+		],
+	};
+	const component = new AssistantMessageComponent(message as never);
+	const rendered = component.render(80).map((line) => stripTerminalSequences(line).trim()).filter(Boolean).join("\n");
+	assert.ok(rendered.includes("Plan"), "the summary shows");
+	assert.ok(rendered.includes("Step one"), "the full text shows");
+	assert.ok(!rendered.includes("Thought for"), "nothing collapses without a duration");
+});
+
+
+test("renders streaming thinking as summary lines only", () => {
+	let transform: ((markdown: string, context: { messageType: string; isStreaming: boolean; availableWidth: number }) => string) | undefined;
 	const pi = {
 		on: () => {},
 		registerMarkdownTransformer: (handler: typeof transform) => {
@@ -1203,80 +1279,17 @@ test("leaves Ctrl+T to Pi's visibility toggle when thinking has no detail", () =
 		fg: (_color: string, text: string) => text,
 		bold: (text: string) => text,
 		italic: (text: string) => text,
-		getFgAnsi: () => "",
 	});
-	const controller = new ThinkingCycleController(pi);
-	controller.bind({
-		ui: {
-			theme,
-			setHiddenThinkingLabel: () => {},
-			onTerminalInput: (handler: typeof terminalInput) => {
-				terminalInput = handler;
-				return () => {};
-			},
-		},
-	} as unknown as ExtensionContext);
-	const render = () => transform?.("**Planning integration harness testing**", {
-		messageType: "assistant-thinking",
-		isStreaming: false,
-		availableWidth: 80,
-	});
-
-	assert.equal(render(), "Planning integration harness testing");
-	assert.equal(terminalInput?.("\x14"), undefined);
-	assert.equal(render(), "Planning integration harness testing");
-	assert.equal(terminalInput?.("\x14"), undefined);
+	const controller = new ThinkingViewController(pi);
+	controller.bind({ ui: { theme, setHiddenThinkingLabel: () => {} } } as unknown as ExtensionContext);
+	const context = { messageType: "assistant-thinking", isStreaming: true, availableWidth: 80 };
+	assert.equal(transform!("**Planning**\n\nDetailed reasoning", context), "Planning",
+		"only the summary line renders while streaming");
+	assert.equal(transform!("First\n**Second**", context), "First\n\nSecond",
+		"each heading becomes its own summary section");
+	assert.equal(transform!("plain", { messageType: "user", isStreaming: false, availableWidth: 80 }), "plain",
+		"user markdown passes through untouched");
 	controller.dispose();
-});
-
-test("detects whether provider thinking includes expandable detail", () => {
-	assert.equal(hasThinkingDetail("Planning integration harness testing"), false);
-	assert.equal(hasThinkingDetail("Summary\n\nDetailed reasoning"), true);
-	assert.equal(hasThinkingDetail("Summary\n**Another summary**"), false);
-});
-
-test("renders each thinking view without changing source content", () => {
-	const thinking = "## **Check the implementation**\n\nInspect the renderer.\nKeep the cache.";
-	assert.equal(renderThinkingView(thinking, "summary", 80), "Check the implementation");
-	assert.equal(
-		renderThinkingView(thinking, "detail", 80),
-		"Check the implementation  \n│  \n│ Inspect the renderer.  \n│ Keep the cache.  \n└ ctrl+t toggle • click to hide",
-	);
-	assert.equal(renderThinkingView(thinking, "hidden", 80), "Thinking...");
-	assert.equal(thinking, "## **Check the implementation**\n\nInspect the renderer.\nKeep the cache.");
-});
-
-test("shows the whole thinking summary instead of truncating it", () => {
-	const paragraph = "I need to check the config loader first because project settings are ignored when untrusted.";
-	for (const view of ["summary", "detail"] as const) {
-		const rendered = renderThinkingView(paragraph, view, 16);
-		assert.ok(rendered.includes(paragraph), view);
-		assert.ok(!rendered.includes("…"), view);
-	}
-});
-
-test("renders a connected detail rail while preserving fenced code", () => {
-	const rendered = renderThinkingView(
-		"Summary\n**Emphasis** and `code`.\n\n```js\nconst value = 1;\n```",
-		"detail",
-		80,
-	);
-	assert.ok(rendered.includes("│ **Emphasis** and `code`.  "));
-	assert.ok(rendered.includes("> ```js\n> const value = 1;\n> ```"));
-});
-
-test("splits headings into independently styled thinking sections", () => {
-	const styledSections: number[] = [];
-	const rendered = renderThinkingView("Summary\n**Detail heading**\nBody", "detail", 80, {
-		styleSummary: (summary, sectionIndex) => {
-			styledSections.push(sectionIndex);
-			return `<thinking>${summary}</thinking>`;
-		},
-	});
-	assert.ok(rendered.includes("<thinking>Summary</thinking>\n\n<thinking>Detail heading</thinking>"));
-	assert.ok(rendered.includes("<thinking>Detail heading</thinking>  \n│  \n│ Body"));
-	assert.equal(rendered.match(/ctrl\+t toggle/gu)?.length, 1);
-	assert.deepEqual(styledSections, [0, 1]);
 });
 
 test("summarizes custom tool arguments on one line", () => {

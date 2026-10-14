@@ -2,7 +2,7 @@
 
 Three tool-row styles for Pi: **Claude**, **Codex**, and **Compact**. Switch styles live, hide tool noise with silent mode, and see what codemode scripts actually called.
 
-> **Fork note.** This is a personal-use fork of [nedleeds/pi-compact-tools](https://github.com/nedleeds/pi-compact-tools). It removes the code that takes over Pi's "Working..." row (`ProgressController`) and the silent-mode activity line (`SilentActivityAnimator` and the shared clock). Pi's own working animation runs untouched. Everything else stays: the three styles, silent mode, thinking display, codemode summaries, and the theme. Versions carry a `-fork.N` suffix.
+> **Fork note.** This is a personal-use fork of [nedleeds/pi-compact-tools](https://github.com/nedleeds/pi-compact-tools). It removes the code that takes over Pi's "Working..." row (`ProgressController`) and the silent-mode activity line (`SilentActivityAnimator` and the shared clock). Pi's own working animation runs untouched. Finished thinking blocks collapse to a `Thought for X seconds` one-liner with click-to-expand. Everything else stays: the three styles, silent mode, codemode summaries, and the theme. Versions carry a `-fork.N` suffix.
 
 **UI only:** no changes to tool execution, model input, or session records. Includes custom-tool rendering and a GitHub Dark theme.
 
@@ -77,7 +77,8 @@ The two failed edits are intentional. Reload/resume preserves summaries from nes
 Without a scope, changes are saved where the style is configured: project or global. A trusted project's own style overrides a global save. Turning rows off or back on waits for the current response to finish and reloads Pi.
 
 - Click a row/group or press `Ctrl+O` to expand/collapse.
-- `Ctrl+T` changes the thinking display, not the model's reasoning effort.
+- A finished thinking block collapses to one line: `Thought for 12 seconds`. Click it to expand the full text, click again to compact it. Blocks that are still streaming or come from a resumed session keep their summary view.
+- `Ctrl+T` hides and shows thinking, as Pi itself does. It no longer cycles through detail views.
 - Choose `github-dark-pro` in Pi's `/settings` for the included theme.
 
 ## Configuration

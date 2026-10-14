@@ -127,5 +127,6 @@
     "Fullscreen scrolling stays in place when expanding rows or cycling thinking",
     "Failed rows show a short reason while their output is hidden"
   ],
-  "0.16.2-fork.1": []
+  "0.16.2-fork.1": [],
+  "0.16.2-fork.2": []
 }

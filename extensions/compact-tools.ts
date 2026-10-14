@@ -55,7 +55,7 @@ import { ToolGroupController } from "./compact-tools-grouping.ts";
 import { chromePainter, completionPainter, paintIndicator } from "./compact-tools-palette.ts";
 import { ToolRuntime } from "./compact-tools-runtime.ts";
 import { findChat, isKind, SilentModeController } from "./compact-tools-silent.ts";
-import { ThinkingCycleController } from "./compact-tools-thinking.ts";
+import { ThinkingViewController, clearThinkingTimings, installThinkingCollapse, noteThinkingEvent } from "./compact-tools-thinking.ts";
 import { ViewportKeeper } from "./compact-tools-viewport.ts";
 import {
 	SUPPORTED_TOOL_SET,
@@ -678,7 +678,7 @@ export default function compactTools(pi: ExtensionAPI): void {
 	publicOwners = new WeakMap();
 
 	registerCompactToolsCommand(pi, () => runtime.config, applyStyle);
-	const thinkingCycle = new ThinkingCycleController(pi);
+	const thinkingView = new ThinkingViewController(pi);
 	const viewport = new ViewportKeeper();
 	const silent = new SilentModeController(pi);
 	const groups = new ToolGroupController(runtime);
@@ -687,6 +687,9 @@ export default function compactTools(pi: ExtensionAPI): void {
 	const rendererAPI = pi as RendererAPI;
 	publicRendering = typeof rendererAPI.registerToolRenderer === "function";
 	const customRowsAvailable = publicRendering || installToolRowPatch();
+	// The collapse hook patches Pi's prototype once per process and always asks
+	// the most recently loaded instance's shared slots, so /reload replaces it.
+	installThinkingCollapse();
 	if (publicRendering) {
 		setRowResolver(undefined);
 		rendererAPI.registerToolRenderer!((name, next) => {
@@ -705,6 +708,7 @@ export default function compactTools(pi: ExtensionAPI): void {
 		if (event.reason !== "reload") {
 			runtime.clearTimings();
 			nestedSummaries.clear();
+			clearThinkingTimings();
 		}
 		const branch = ctx.sessionManager?.getBranch?.();
 		if (Array.isArray(branch)) nestedSummaries.restoreBranch(branch);
@@ -722,7 +726,7 @@ export default function compactTools(pi: ExtensionAPI): void {
 			renderContext = ctx;
 			// First, so its input listener sees relayout keys before the thinking controller consumes them.
 			viewport.bind(ctx);
-			thinkingCycle.bind(ctx);
+			thinkingView.bind(ctx);
 			silent.bind(ctx, runtime.config.mode, event.reason === "reload");
 			groups.bind(ctx);
 			if ((runtime.config.custom_tools.enabled || runtime.config.tools.length > 0) && !customRowsAvailable && !customRowsWarned) {
@@ -732,7 +736,7 @@ export default function compactTools(pi: ExtensionAPI): void {
 		} else {
 			if (ctx.mode === "tui") unbindRenderer(ctx);
 			viewport.dispose();
-			thinkingCycle.dispose();
+			thinkingView.dispose();
 			silent.dispose();
 			groups.dispose();
 		}
@@ -748,7 +752,10 @@ export default function compactTools(pi: ExtensionAPI): void {
 	pi.on("agent_end", () => runtime.setBusy(false));
 	// The calls of the run going on, read from each update as Pi reads them to make
 	// their rows, and told to extensions before Pi makes them.
-	pi.on("message_update", (event) => noteCalls(event.message));
+	pi.on("message_update", (event) => {
+		noteCalls(event.message);
+		noteThinkingEvent(event.message, event.assistantMessageEvent);
+	});
 	// Notification-only: read the host's nested record without changing any message.
 	pi.on("message_end", (event) => {
 		if (nestedSummaries.restore(event.message)) runtime.repaint();
@@ -773,7 +780,7 @@ export default function compactTools(pi: ExtensionAPI): void {
 		runtime.noteExecutionEnd(event.toolCallId, (event as { durationMs?: number }).durationMs);
 	});
 	pi.on("session_shutdown", (event) => {
-		thinkingCycle.dispose();
+		thinkingView.dispose();
 		silent.dispose();
 		groups.dispose();
 		viewport.dispose();

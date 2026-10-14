@@ -1,48 +1,14 @@
-import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import {
-	isKeyRelease,
-	isKeyRepeat,
-	Key,
-	matchesKey,
-	stripTerminalSequences,
-	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
-import { chromePainter } from "./compact-tools-palette.ts";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { Markdown, MouseRegion, Text, stripTerminalSequences, type Component, type MarkdownTheme, type MouseRegionHandler, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { hookMethod } from "./compact-tools-hook.ts";
+import { isKind } from "./compact-tools-silent.ts";
 
-export type ThinkingView = "summary" | "detail" | "hidden";
-export type ThinkingPhase = "summary" | "detail" | "summary-after-detail" | "hidden";
+export type ThinkingView = "summary" | "hidden";
 
 type ThinkingRenderOptions = {
 	styleSummary?: (summary: string, sectionIndex: number) => string;
-	styleDetailPrefix?: (prefix: string) => string;
-	controls?: string | ((hasDetail: boolean) => string | undefined);
-	styleControlPrefix?: (prefix: string) => string;
 };
-
-const NEXT_PHASE: Record<ThinkingPhase, ThinkingPhase> = {
-	summary: "detail",
-	detail: "summary-after-detail",
-	"summary-after-detail": "hidden",
-	hidden: "summary",
-};
-
-export function thinkingViewForPhase(phase: ThinkingPhase): ThinkingView {
-	return phase === "summary-after-detail" ? "summary" : phase;
-}
-
-export function nextThinkingPhase(phase: ThinkingPhase): ThinkingPhase {
-	return NEXT_PHASE[phase];
-}
-
-export type ThinkingToggleInput = "toggle" | "repeat" | "release";
-
-export function classifyThinkingToggleInput(data: string): ThinkingToggleInput | undefined {
-	if (!matchesKey(data, Key.ctrl("t"))) return undefined;
-	if (isKeyRelease(data)) return "release";
-	return isKeyRepeat(data) ? "repeat" : "toggle";
-}
 
 function plainSummary(line: string): string {
 	return line
@@ -56,7 +22,7 @@ function plainSummary(line: string): string {
 
 type ThinkingSection = { summary: string; detail: string };
 
-function splitThinkingSections(markdown: string): ThinkingSection[] {
+export function splitThinkingSections(markdown: string): ThinkingSection[] {
 	const normalized = markdown.includes("\r") ? markdown.replace(/\r\n?/gu, "\n") : markdown;
 	const lines = normalized.split("\n");
 	let first = -1;
@@ -96,192 +62,268 @@ function splitThinkingSections(markdown: string): ThinkingSection[] {
 	return sections;
 }
 
-function compactDetail(
-	detail: string,
-	availableWidth: number,
-	stylePrefix: (prefix: string) => string,
-): string {
-	const output: string[] = [];
-	let inFence = false;
-	for (const logicalLine of detail.replace(/\t/gu, "   ").split("\n")) {
-		const fence = /^\s*(```|~~~)/u.test(logicalLine);
-		if (!inFence && fence) {
-			// Fences need a real blockquote and blank delimiter to remain valid Markdown.
-			output.push("", `> ${logicalLine}`);
-			inFence = true;
-			continue;
-		}
-		if (inFence) {
-			output.push(logicalLine ? `> ${logicalLine}` : ">");
-			if (fence) {
-				inFence = false;
-				output.push("");
-			}
-			continue;
-		}
-		if (!logicalLine) {
-			output.push(`${stylePrefix("│")}  `);
-			continue;
-		}
-		const wrapped = wrapTextWithAnsi(logicalLine, Math.max(1, availableWidth - 2));
-		for (const line of wrapped) {
-			output.push(`${stylePrefix("│ ")}${stripTerminalSequences(line)}  `);
-		}
-	}
-	return output.join("\n");
-}
-
-function hardBreak(lines: string[]): string {
-	return lines.map((line, index) => (index < lines.length - 1 ? `${line}  ` : line)).join("\n");
-}
-
-function sectionsHaveDetail(sections: readonly ThinkingSection[]): boolean {
-	return sections.some(({ detail }) => detail.length > 0);
-}
-
-export function hasThinkingDetail(markdown: string): boolean {
-	return sectionsHaveDetail(splitThinkingSections(markdown));
-}
-
-function renderThinkingSections(
-	sections: readonly ThinkingSection[],
+/** A finished block reads as one line; the summary carries the section titles while it streams. */
+export function renderThinkingView(
+	markdown: string,
 	view: ThinkingView,
-	availableWidth: number,
+	_availableWidth: number,
 	options: ThinkingRenderOptions = {},
 ): string {
 	if (view === "hidden") return "Thinking...";
-	const controls = options.controls ?? ((hasDetail: boolean) =>
-		hasDetail ? "ctrl+t toggle • click to hide" : undefined);
-	const styleControlPrefix = options.styleControlPrefix ?? ((prefix: string) => prefix);
-	return sections
-		.map(({ summary, detail }, sectionIndex) => {
-			// The summary is never cut short: a provider that sends one unstructured
-			// paragraph has no detail to expand into, so the summary is all there is.
-			// The host's Markdown component wraps it to the available width.
+	return splitThinkingSections(markdown)
+		.map(({ summary }, sectionIndex) => {
 			const plain = stripTerminalSequences(summary);
-			const title = options.styleSummary?.(plain, sectionIndex) ?? plain;
-			const sectionControls = view === "detail"
-				? typeof controls === "function" ? controls(detail.length > 0) : controls
-				: undefined;
-			const controlLines = sectionControls
-				? wrapTextWithAnsi(sectionControls, Math.max(1, availableWidth - 2)).map(
-						(line, index) => `${index === 0 ? styleControlPrefix("└ ") : "  "}${line}`,
-					)
-				: [];
-			if (view === "detail" && detail) {
-				const styleDetailPrefix = options.styleDetailPrefix ?? ((prefix: string) => prefix);
-				const connector = `${styleDetailPrefix("│")}  `;
-				const detailOutput = `${title}  \n${connector}\n${compactDetail(detail, availableWidth, styleDetailPrefix)}`;
-				return controlLines.length > 0 ? `${detailOutput}\n${hardBreak(controlLines)}` : detailOutput;
-			}
-			return hardBreak([title, ...controlLines]);
+			return options.styleSummary?.(plain, sectionIndex) ?? plain;
 		})
 		.join("\n\n");
 }
 
-/** Display-only transformation; the original thinking remains unchanged in session/model context. */
-export function renderThinkingView(
-	markdown: string,
-	view: ThinkingView,
-	availableWidth: number,
-	options: ThinkingRenderOptions = {},
-): string {
-	return renderThinkingSections(splitThinkingSections(markdown), view, availableWidth, options);
+/** "Thought for 12 seconds", "Thought for 1m 20s", "Thought for under a second". */
+export function formatThinkingDuration(ms: number): string {
+	if (ms < 1000) return "under a second";
+	const seconds = Math.round(ms / 1000);
+	if (seconds < 60) return seconds === 1 ? "1 second" : `${seconds} seconds`;
+	const minutes = Math.floor(seconds / 60);
+	const rest = seconds % 60;
+	return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 }
 
-function getInitialThinkingPhase(): ThinkingPhase {
-	try {
-		const settings = JSON.parse(readFileSync(join(getAgentDir(), "settings.json"), "utf8")) as {
-			hideThinkingBlock?: unknown;
-		};
-		return settings.hideThinkingBlock === true ? "hidden" : "summary";
-	} catch {
-		return "summary";
+// --- Measured durations ------------------------------------------------------
+// Pi streams thinking through message_update events that carry a contentIndex.
+// Each thinking_start opens a timer and each thinking_end closes it; the run's
+// text is keyed the same way AssistantMessageComponent joins consecutive blocks,
+// so a render can find its duration from the markdown alone.
+
+type ThinkingTimings = {
+	starts: Map<string, number>;
+	blocks: Map<string, number>;
+	runs: Map<string, number>;
+};
+
+const TIMINGS_KEY = Symbol.for("pi-compact-tools.thinking.timings");
+
+function thinkingTimings(): ThinkingTimings {
+	const holder = globalThis as typeof globalThis & { [TIMINGS_KEY]?: ThinkingTimings };
+	return holder[TIMINGS_KEY] ??= { starts: new Map(), blocks: new Map(), runs: new Map() };
+}
+
+/** Two cheap orders over the same text, plus its length: a 64-bit footprint. */
+function runHash(text: string): string {
+	let fnv = 0x811c9dc5;
+	let djb = 5381;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		fnv = Math.imul(fnv ^ code, 0x01000193) >>> 0;
+		djb = (Math.imul(djb, 33) ^ code) >>> 0;
+	}
+	return `${fnv.toString(16)}:${djb.toString(16)}:${text.length}`;
+}
+
+type ThinkingContentLike = { type: string; thinking?: string };
+type ThinkingEventLike = { type: string; contentIndex?: number };
+
+type ThinkingMessageLike = { id?: unknown; content?: ThinkingContentLike[] };
+
+/**
+ * Record a streaming event's timing. Pass `now` in tests; production calls omit it.
+ */
+export function noteThinkingEvent(
+	message: ThinkingMessageLike | unknown,
+	event: ThinkingEventLike,
+	now: number = Date.now(),
+): void {
+	const source = message as ThinkingMessageLike;
+	if (event.type !== "thinking_start" && event.type !== "thinking_end") return;
+	const id = typeof source.id === "string" ? source.id : "";
+	if (!id) return;
+	const index = event.contentIndex;
+	if (!Number.isInteger(index)) return;
+	const content = source.content ?? [];
+	if (content[index!]?.type !== "thinking") return;
+	const timings = thinkingTimings();
+	const key = `${id}:${index}`;
+	if (event.type === "thinking_start") {
+		timings.starts.set(key, now);
+		return;
+	}
+	const started = timings.starts.get(key);
+	timings.starts.delete(key);
+	if (started !== undefined) timings.blocks.set(key, now - started);
+	// The run is every consecutive thinking block around this one, joined the way
+	// the host joins them: trimmed, empties skipped, "\n\n" between blocks.
+	let first = index!;
+	while (first > 0 && content[first - 1]?.type === "thinking") first--;
+	let last = index!;
+	while (last + 1 < content.length && content[last + 1]?.type === "thinking") last++;
+	let text = "";
+	let ms = 0;
+	let timed = false;
+	for (let i = first; i <= last; i++) {
+		const trimmed = (content[i]?.thinking ?? "").trim();
+		if (!trimmed) continue;
+		text = text ? `${text}\n\n${trimmed}` : trimmed;
+		const blockMs = timings.blocks.get(`${id}:${i}`);
+		if (blockMs !== undefined) {
+			ms += blockMs;
+			timed = true;
+		}
+	}
+	if (text && timed) timings.runs.set(runHash(text), ms);
+}
+
+/** The measured duration of a finished thinking run, or undefined while it streams. */
+export function thinkingDurationFor(markdown: string): number | undefined {
+	return thinkingTimings().runs.get(runHash(markdown));
+}
+
+/** Drop every recorded duration; called when a session is replaced. */
+export function clearThinkingTimings(): void {
+	const timings = thinkingTimings();
+	timings.starts.clear();
+	timings.blocks.clear();
+	timings.runs.clear();
+}
+
+// --- Collapsing finished runs ------------------------------------------------
+
+const EXPANDED_RUNS = Symbol.for("pi-compact-tools.thinking.expanded");
+
+/** The theme the collapse one-liners paint with; bound alongside the view controller. */
+let collapseTheme: Theme | undefined;
+
+export function setCollapseTheme(theme: Theme | undefined): void {
+	collapseTheme = theme;
+}
+
+type AssistantLike = {
+	contentContainer: { children: unknown[] };
+	lastMessage?: { content?: ThinkingContentLike[] } | undefined;
+	outputPad?: number;
+	markdownTheme?: unknown;
+	updateContent(message?: unknown): void;
+};
+
+/** The thinking runs the host would render, in order, as the joined markdown it hands to transformers. */
+function thinkingRunsOf(message: AssistantLike["lastMessage"]): string[] {
+	const content = message?.content;
+	if (!Array.isArray(content)) return [];
+	const runs: string[] = [];
+	let text = "";
+	for (const block of content) {
+		if (block?.type !== "thinking") {
+			if (text) runs.push(text);
+			text = "";
+			continue;
+		}
+		const trimmed = (block.thinking ?? "").trim();
+		if (!trimmed) continue;
+		text = text ? `${text}\n\n${trimmed}` : trimmed;
+	}
+	if (text) runs.push(text);
+	return runs;
+}
+
+function expandedRunsOf(self: AssistantLike): Set<number> {
+	const holder = self as unknown as Record<PropertyKey, unknown>;
+	let set = holder[EXPANDED_RUNS] as Set<number> | undefined;
+	if (!set) holder[EXPANDED_RUNS] = set = new Set();
+	return set;
+}
+
+/** A click that toggles one run between its one-liner and its full text. */
+function toggleRun(self: AssistantLike, index: number): MouseRegionHandler {
+	return (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		const set = expandedRunsOf(self);
+		if (set.has(index)) set.delete(index);
+		else set.add(index);
+		self.updateContent(self.lastMessage);
+		return { handled: true };
+	};
+}
+
+/**
+ * Swap every finished, measured thinking run for a one-liner that expands on
+ * click and compacts on the next click. Runs that stream or have no recorded
+ * duration keep the host's own rendering and click behavior.
+ */
+function collapseFinishedRuns(self: AssistantLike): void {
+	if (thinkingTimings().runs.size === 0) return;
+	const runs = thinkingRunsOf(self.lastMessage);
+	if (runs.length === 0) return;
+	const outputPad = self.outputPad ?? 0;
+	const children = self.contentContainer.children;
+	// Each rendered unit sits behind at most one Spacer, and a thinking run the
+	// host draws visibly is a MouseRegion, while a hidden run is a bare Text.
+	// Walking both lists together aligns them; trailing notices fall outside.
+	let unit = 0;
+	for (let i = 0; i < children.length && unit < runs.length; i++) {
+		const child = children[i];
+		if (!isKind(child, MouseRegion)) {
+			// A hidden run renders as plain text with the same padding and owns no
+			// click region, but still occupies its run's slot.
+			if (isKind(child, Text) && (child as unknown as { paddingX?: number }).paddingX === outputPad) unit++;
+			continue;
+		}
+		const run = runs[unit++];
+		if (run === undefined) break;
+		const ms = thinkingDurationFor(run);
+		if (ms === undefined) continue;
+		const index = unit - 1;
+		const expanded = expandedRunsOf(self).has(index);
+		const label = `Thought for ${formatThinkingDuration(ms)}`;
+		const component: Component = expanded
+			? new Markdown(run, outputPad, 0, self.markdownTheme as MarkdownTheme, collapseTheme
+					? { color: (text: string) => collapseTheme!.fg("thinkingText", text), italic: true }
+					: undefined)
+			: new Text(collapseTheme
+					? collapseTheme.italic(collapseTheme.fg("thinkingText", label))
+					: label, outputPad, 0);
+		children[i] = new MouseRegion(component, toggleRun(self, index));
 	}
 }
 
-export class ThinkingCycleController {
-	private phase: ThinkingPhase = "summary";
-	private unsubscribe: (() => void) | undefined;
+/**
+ * Wrap Pi's thinking rendering once per process. Returns false when the host
+ * no longer has that shape, leaving its own behavior in place.
+ */
+export function installThinkingCollapse(): boolean {
+	const prototype = (AssistantMessageComponent as unknown as { prototype?: { updateContent?: unknown } })?.prototype;
+	if (!prototype || typeof prototype.updateContent !== "function") return false;
+	return hookMethod(prototype, "updateContent", "thinking.collapse", (self, args, original) => {
+		const result = original.apply(self, args);
+		try {
+			collapseFinishedRuns(self as unknown as AssistantLike);
+		} catch {
+			// A shape change must never break Pi's own rendering.
+		}
+		return result;
+	});
+}
+
+/** Renders streaming summaries and keeps Pi's hidden-thinking label in sync. */
+export class ThinkingViewController {
 	private theme: Theme | undefined;
-	private hasToggleableThinking = false;
-	private refreshThinking: (() => void) | undefined;
 
 	constructor(pi: ExtensionAPI) {
 		pi.registerMarkdownTransformer((markdown, context) => {
 			if (context.messageType !== "assistant-thinking") return markdown;
-			const sections = splitThinkingSections(markdown);
-			this.hasToggleableThinking ||= sectionsHaveDetail(sections);
 			const theme = this.theme;
-			const detailTextPrefix = theme?.getFgAnsi("thinkingText");
-			// Derived once per transform: the rail is drawn for every wrapped line of detail.
-			const rail = theme ? chromePainter(theme) : undefined;
-			return renderThinkingSections(sections, thinkingViewForPhase(this.phase), context.availableWidth, {
-				// Keep thinking chrome neutral across themes: effort-level and border colors can
-				// be intentionally vivid and are not content hierarchy colors.
+			return renderThinkingView(markdown, "summary", context.availableWidth, {
 				styleSummary: theme ? (summary) => theme.fg("text", theme.bold(summary)) : undefined,
-				// Prefix styling resets the foreground; resume the host's thinking text color.
-				// The rail and connector are the same frame the tool rows draw, so they take
-				// the same chrome tone rather than a color name of their own.
-				styleDetailPrefix: rail && detailTextPrefix
-					? (prefix) => rail(prefix) + detailTextPrefix
-					: undefined,
-				controls: theme
-					? (hasDetail) => hasDetail
-						? theme.fg(
-								"dim",
-								`${theme.italic("ctrl+t")} toggle • ${theme.italic("click")} to hide`,
-							)
-						: undefined
-					: undefined,
-				styleControlPrefix: rail,
 			});
 		});
 	}
 
 	bind(ctx: ExtensionContext): void {
-		this.unsubscribe?.();
 		this.theme = ctx.ui.theme;
-		this.hasToggleableThinking = false;
-		// Match Pi's persisted host visibility after startup or /reload. When the
-		// host is hidden, Markdown transformers are not invoked at all. Pi wraps
-		// this label in thinkingText, so an inner text span keeps it consistent with
-		// completed summary titles.
-		this.phase = getInitialThinkingPhase();
-		const hiddenLabel = this.theme.fg("text", this.theme.bold("Thinking..."));
-		// Pi does not currently expose transcript invalidation directly. Updating
-		// this label rebuilds assistant Markdown and requests a render without
-		// changing the message or its hidden/visible state.
-		this.refreshThinking = () => ctx.ui.setHiddenThinkingLabel(hiddenLabel);
-		this.refreshThinking();
-		this.unsubscribe = ctx.ui.onTerminalInput((data) => {
-			const input = classifyThinkingToggleInput(data);
-			if (input === undefined) return undefined;
-			// Kitty-capable macOS terminals report held keys as repeat events. Treating
-			// those as presses can skip detail before the user sees it.
-			if (input === "release" || input === "repeat") return { consume: true };
-			// With no provider-supplied detail, leave Ctrl+T to Pi's normal
-			// visible/hidden toggle instead of inserting an identical detail phase.
-			if (!this.hasToggleableThinking) return undefined;
-			this.phase = nextThinkingPhase(this.phase);
-			if (this.phase === "detail" || this.phase === "summary-after-detail") {
-				// Visible-to-visible transitions are owned by this extension. Rebuild the
-				// Markdown and prevent Pi's built-in two-state toggle from hiding it.
-				this.refreshThinking?.();
-				return { consume: true };
-			}
-			// summary-after-detail -> hidden and hidden -> summary intentionally reach
-			// Pi's existing two-state handler. This keeps visibility/settings in sync
-			// and clears built-in per-block click overrides.
-			return undefined;
-		});
+		setCollapseTheme(ctx.ui.theme);
+		// Pi wraps this label in thinkingText, so an inner text span keeps it
+		// consistent with completed summary titles.
+		ctx.ui.setHiddenThinkingLabel(ctx.ui.theme.fg("text", ctx.ui.theme.bold("Thinking...")));
 	}
 
 	dispose(): void {
-		this.unsubscribe?.();
-		this.unsubscribe = undefined;
-		this.refreshThinking = undefined;
-		this.hasToggleableThinking = false;
 		this.theme = undefined;
 	}
 }
