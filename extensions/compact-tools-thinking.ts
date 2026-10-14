@@ -310,7 +310,10 @@ export class ThinkingViewController {
 			if (context.messageType !== "assistant-thinking") return markdown;
 			const theme = this.theme;
 			return renderThinkingView(markdown, "summary", context.availableWidth, {
-				styleSummary: theme ? (summary) => theme.fg("text", theme.bold(summary)) : undefined,
+				// Thinking chrome stays in Pi's own thinking color: the detail text and
+				// the host's hidden label both use it, so summaries match them and no
+				// part of a thinking block reads louder than the answer.
+				styleSummary: theme ? (summary) => theme.fg("thinkingText", summary) : undefined,
 			});
 		});
 	}
@@ -318,9 +321,8 @@ export class ThinkingViewController {
 	bind(ctx: ExtensionContext): void {
 		this.theme = ctx.ui.theme;
 		setCollapseTheme(ctx.ui.theme);
-		// Pi wraps this label in thinkingText, so an inner text span keeps it
-		// consistent with completed summary titles.
-		ctx.ui.setHiddenThinkingLabel(ctx.ui.theme.fg("text", ctx.ui.theme.bold("Thinking...")));
+		// Pi writes its own hidden label in italic thinkingText, so this matches it.
+		ctx.ui.setHiddenThinkingLabel(ctx.ui.theme.italic(ctx.ui.theme.fg("thinkingText", "Thinking...")));
 	}
 
 	dispose(): void {
