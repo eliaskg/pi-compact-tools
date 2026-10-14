@@ -9,7 +9,7 @@
   },
   "0.16.1": {
     "New": [
-      "Minimal codemode summaries show each tool once: read 3 · bash 1 · edit 3 2; non-edit tools keep first-call order and edit always comes last",
+      "Minimal codemode summaries show each tool once: read 3 \u00b7 bash 1 \u00b7 edit 3 2; non-edit tools keep first-call order and edit always comes last",
       "Plain counts use green for success, red for failure, and yellow for unfinished calls, without zero placeholders, count parentheses, status icons, pipes, or edit diff lists",
       "Summary names retain their theme title hue at 75% brightness without bold; outcome counts retain their hues at 80% brightness",
       "Completion duration and output-line metadata is one step brighter; rails, connectors, separators, main tool titles, and code previews are unchanged"
@@ -25,7 +25,7 @@
     "New": [
       "Completed codemode rows summarize nested tool successes and failures beside their duration and output-line count without changing model input",
       "Reloads retain exact live edit diffs; resumed sessions and /tree branches restore saved per-call outcomes without guessing changes",
-      "Codemode summaries show every edit attempt in order: edit(3) [+10 -3|✗|+5 -7], with no checkmark on successful changes",
+      "Codemode summaries show every edit attempt in order: edit(3) [+10 -3|\u2717|+5 -7], with no checkmark on successful changes",
       "Compact, Claude, and Codex show the first three edit attempts when collapsed and every recorded attempt when expanded",
       "Diff separators are dim and have no surrounding whitespace; additions and removals retain their diff colors"
     ],
@@ -35,14 +35,14 @@
       "Per-call edit diffs keep first-call order even when nested calls finish out of order",
       "Claude and Codex keep codemode output, an indented completion summary without a separate branch marker, and the disclosure in that order",
       "Failed and unfinished edit attempts remain visible in previews, including omitted-attempt status counts",
-      "A missing successful edit diff shows ok for that call without hiding other calls’ known changes or guessing totals"
+      "A missing successful edit diff shows ok for that call without hiding other calls\u2019 known changes or guessing totals"
     ],
     "Deprecated": []
   },
   "0.15.0": {
     "New": [
       "Claude style now marks the changed words in an edit diff, like Claude Code 2.1.296: a removed line and the added line that replaces it get a brighter tint on the words that differ. Lines that are mostly rewritten are left alone",
-      "Codex style spells the expand key the way Codex 0.162 does: `⌃o` on macOS, `^o` on Linux, `ctrl+o` elsewhere"
+      "Codex style spells the expand key the way Codex 0.162 does: `\u2303o` on macOS, `^o` on Linux, `ctrl+o` elsewhere"
     ],
     "Fix": [
       "Line numbers in edit diffs and Write previews moved one column right and lost one trailing space, matching Claude Code 2.1.296. Code stays in the same column"
@@ -64,10 +64,10 @@
   "0.14.1": {
     "Fix": [
       "Fixed unintended input-token overhead: compact rendering no longer registers or activates tools that Pi would otherwise leave inactive",
-      "Preserves Pi’s tool execution settings and other extensions’ tool definitions and renderers",
+      "Preserves Pi\u2019s tool execution settings and other extensions\u2019 tool definitions and renderers",
       "Fixed tool rows not updating correctly after reloads or trusted-project style changes",
-      "Uses Pi’s native renderer API on Pi 1.0.2 and later, including compact HTML exports",
-      "Supports Pi 0.85.1 and later; Pi 1.0.2 or later is recommended. On earlier Pi versions, HTML exports use Pi’s default renderers"
+      "Uses Pi\u2019s native renderer API on Pi 1.0.2 and later, including compact HTML exports",
+      "Supports Pi 0.85.1 and later; Pi 1.0.2 or later is recommended. On earlier Pi versions, HTML exports use Pi\u2019s default renderers"
     ]
   },
   "0.14.0": {
@@ -126,5 +126,6 @@
     "Thinking summaries are shown in full instead of cut off",
     "Fullscreen scrolling stays in place when expanding rows or cycling thinking",
     "Failed rows show a short reason while their output is hidden"
-  ]
+  ],
+  "0.16.2-fork.1": []
 }

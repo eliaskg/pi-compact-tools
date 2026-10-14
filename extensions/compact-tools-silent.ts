@@ -12,7 +12,6 @@ import { Markdown, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
 import { hookMethod } from "./compact-tools-hook.ts";
 import type { DisplayMode } from "./compact-tools-types.ts";
 import { captureViewport } from "./compact-tools-viewport.ts";
-import { SilentActivityAnimator } from "./compact-tools-activity.ts";
 
 const STATUS_KEY = "compact-tools";
 const WIDGET_KEY = "compact-tools-silent";
@@ -124,7 +123,7 @@ export function renderAnswerOnly(component: AssistantLike, width: number, render
  * A summary Pi writes into the chat of its own accord: the context it compacted
  * away, or the /tree branch it left behind. Both are bookkeeping rather than a
  * prompt or an answer, and compaction arrives mid-turn, where a visible row
- * would come between the animating activity line and the editor below it.
+ * would come between the running tool rows and the editor below it.
  * Read through `typeof` so an older Pi without the export keeps its own rows.
  */
 function isSummary(child: unknown): boolean {
@@ -264,13 +263,11 @@ function installPatches(): boolean {
 	return tools && assistant && notices;
 }
 
-/** Hides tool rows, intermediate assistant turns, thinking, and extension notices; the working label carries progress instead. */
+/** Hides tool rows, intermediate assistant turns, thinking, and extension notices; Pi's own working label carries progress. */
 export class SilentModeController {
 	private context: ExtensionContext | undefined;
-	private readonly activity: SilentActivityAnimator;
 
-	constructor(pi: ExtensionAPI, private readonly onVisible?: (ctx: ExtensionContext) => void) {
-		this.activity = new SilentActivityAnimator(pi);
+	constructor(pi: ExtensionAPI) {
 		pi.registerCommand("silent", {
 			description: `(${SILENT_SHORTCUT}) Show only prompts and final answers`,
 			getArgumentCompletions: (prefix) => {
@@ -304,7 +301,6 @@ export class SilentModeController {
 		// No notification: Pi writes notices into the transcript, which is exactly
 		// what silent mode keeps clean.
 		this.apply(enabled);
-		if (!sharedState().enabled && this.context) this.onVisible?.(this.context);
 	}
 
 	isEnabled(): boolean {
@@ -313,7 +309,6 @@ export class SilentModeController {
 
 	bind(ctx: ExtensionContext, mode: DisplayMode, reload: boolean): void {
 		this.context = ctx;
-		this.activity.bind(ctx);
 		// An invisible widget is the extension API's way to reach Pi's TUI, and
 		// through it the chat container whose notices silent mode hides.
 		ctx.ui.setWidget(WIDGET_KEY, (tui) => {
@@ -326,7 +321,6 @@ export class SilentModeController {
 	}
 
 	dispose(): void {
-		this.activity.dispose();
 		// A patched Pi prototype outlives this extension instance. Disable hiding
 		// while no instance is bound, but keep the choice for a subsequent /reload.
 		sharedState().active = false;
@@ -340,14 +334,12 @@ export class SilentModeController {
 		if (enabled && !installPatches()) {
 			state.active = false;
 			state.enabled = false;
-			this.activity.setEnabled(false);
 			this.context?.ui.notify("Silent mode is unavailable in this version of Pi", "warning");
 			return false;
 		}
 		// Hiding or revealing rows above the reader would otherwise move the view.
 		if (enabled !== state.enabled) captureViewport();
 		state.enabled = enabled;
-		this.activity.setEnabled(enabled);
 		state.active = this.context !== undefined;
 		// Silent mode shows no indicator of its own; the transcript itself is the cue.
 		// Clearing the status still requests a render, which is what reveals or hides

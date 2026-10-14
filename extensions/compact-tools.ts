@@ -53,8 +53,6 @@ import { NestedCallSummaries } from "./compact-tools-nested.ts";
 import { renderCodexCall, renderCodexResult } from "./compact-tools-codex-rows.ts";
 import { ToolGroupController } from "./compact-tools-grouping.ts";
 import { chromePainter, completionPainter, paintIndicator } from "./compact-tools-palette.ts";
-import { ProgressController } from "./compact-tools-progress.ts";
-import { showReleaseNotice } from "./compact-tools-release.ts";
 import { ToolRuntime } from "./compact-tools-runtime.ts";
 import { findChat, isKind, SilentModeController } from "./compact-tools-silent.ts";
 import { ThinkingCycleController } from "./compact-tools-thinking.ts";
@@ -681,9 +679,8 @@ export default function compactTools(pi: ExtensionAPI): void {
 
 	registerCompactToolsCommand(pi, () => runtime.config, applyStyle);
 	const thinkingCycle = new ThinkingCycleController(pi);
-	const progress = new ProgressController(pi);
 	const viewport = new ViewportKeeper();
-	const silent = new SilentModeController(pi, showReleaseNotice);
+	const silent = new SilentModeController(pi);
 	const groups = new ToolGroupController(runtime);
 	builtinStates = new WeakMap();
 	authorStates = new WeakMap();
@@ -725,11 +722,9 @@ export default function compactTools(pi: ExtensionAPI): void {
 			renderContext = ctx;
 			// First, so its input listener sees relayout keys before the thinking controller consumes them.
 			viewport.bind(ctx);
-			progress.bind(ctx);
 			thinkingCycle.bind(ctx);
 			silent.bind(ctx, runtime.config.mode, event.reason === "reload");
 			groups.bind(ctx);
-			if (!silent.isEnabled()) showReleaseNotice(ctx);
 			if ((runtime.config.custom_tools.enabled || runtime.config.tools.length > 0) && !customRowsAvailable && !customRowsWarned) {
 				customRowsWarned = true;
 				ctx.ui.notify("Compact tool rendering is unavailable in this version of Pi", "warning");
@@ -737,7 +732,6 @@ export default function compactTools(pi: ExtensionAPI): void {
 		} else {
 			if (ctx.mode === "tui") unbindRenderer(ctx);
 			viewport.dispose();
-			progress.dispose();
 			thinkingCycle.dispose();
 			silent.dispose();
 			groups.dispose();
@@ -780,7 +774,6 @@ export default function compactTools(pi: ExtensionAPI): void {
 	});
 	pi.on("session_shutdown", (event) => {
 		thinkingCycle.dispose();
-		progress.dispose();
 		silent.dispose();
 		groups.dispose();
 		viewport.dispose();

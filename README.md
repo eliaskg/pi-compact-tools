@@ -2,6 +2,8 @@
 
 Three tool-row styles for Pi: **Claude**, **Codex**, and **Compact**. Switch styles live, hide tool noise with silent mode, and see what codemode scripts actually called.
 
+> **Fork note.** This is a personal-use fork of [nedleeds/pi-compact-tools](https://github.com/nedleeds/pi-compact-tools). It removes the code that takes over Pi's "Working..." row (`ProgressController`) and the silent-mode activity line (`SilentActivityAnimator` and the shared clock). Pi's own working animation runs untouched. Everything else stays: the three styles, silent mode, thinking display, codemode summaries, and the theme. Versions carry a `-fork.N` suffix.
+
 **UI only:** no changes to tool execution, model input, or session records. Includes custom-tool rendering and a GitHub Dark theme.
 
 ![The same tool calls in Compact, Claude, Codex, then silent mode](https://raw.githubusercontent.com/nedleeds/pi-compact-tools/main/assets/overview.gif)
@@ -9,10 +11,10 @@ Three tool-row styles for Pi: **Claude**, **Codex**, and **Compact**. Switch sty
 ## Install
 
 ```bash
-pi install npm:pi-compact-tools
+pi install ./local-package
 ```
 
-Run `/reload` or restart Pi, then `/compact-tools` to choose a style. Try without installing: `pi -e npm:pi-compact-tools`.
+Run `/reload` or restart Pi, then `/compact-tools` to choose a style. This fork is not published to npm; install it from a local checkout. The upstream package installs with `pi install npm:pi-compact-tools`.
 
 Requires Node.js 22.19+ and Pi 0.85.1+. **Pi 1.0.2+ recommended** for native renderer integration and styled HTML exports.
 
@@ -42,7 +44,7 @@ Switching redraws existing rows, even while tools run. Only read-only exploratio
 
 Toggle with **`Ctrl+'`** or `/silent`; use `/silent on` and `/silent off` explicitly. Works with any style. It also hides thinking, intermediate assistant turns, and error/status notices; turn it off to inspect them.
 
-**During work:** hide tool rows while the activity light keeps moving and the answer still arrives. Turn it off to restore every row.
+**During work:** hide tool rows while Pi's own working label carries progress and the answer still arrives. Turn it off to restore every row.
 
 ![Silent mode toggled during a running command, then disabled to restore its rows](https://raw.githubusercontent.com/nedleeds/pi-compact-tools/main/assets/silent-mode.gif)
 

@@ -20,7 +20,7 @@ const leadingColor = (line: string) => line.match(/^\s*(\x1b\[[0-9;]*m)/u)?.[1];
 const dotOf = (lines: string[]) => lines.join("\n").match(/\x1b\[[0-9;]*m[⦁•]/u)?.[0];
 
 /** One run of silent mode's activity line: 26 frames on the shared 80 ms clock. */
-const ACTIVITY_BREATH_MS = 26 * 80;
+const ANIMATION_WINDOW_MS = 26 * 80;
 const STYLES = { compact: { style: "compact" }, claude: { style: "claude" }, codex: { style: "codex" } } as const;
 let sequence = 0;
 
@@ -197,12 +197,8 @@ for (const [styleName, config] of Object.entries(STYLES)) {
 		// Starting in silent mode installs the hiding, as a user's configuration would.
 		const harness = await loadExtension({ ...config, mode: "silent" }, { tui: true, idle: false });
 		try {
-			// Silent mode animates its own activity line while the agent works. Over one
-			// whole breath of it, that is every frame asked for with no rows at all.
-			const idle = harness.requestRenders();
-			timerClock.tick(ACTIVITY_BREATH_MS);
-			const activityOnly = harness.requestRenders() - idle;
-			assert.ok(activityOnly > 0, "the activity line animates");
+			// Silent mode hides every row while the agent works, and asks for no
+			// frames of its own: Pi's untouched working label carries the progress.
 			const { rows } = transcript(harness);
 			const state = silentState();
 			assert.equal(state.enabled && state.active, true, "silent from the start");
@@ -214,8 +210,8 @@ for (const [styleName, config] of Object.entries(STYLES)) {
 
 			// Hidden rows ask for no frames of their own, however long the call runs.
 			const before = harness.requestRenders();
-			timerClock.tick(ACTIVITY_BREATH_MS);
-			assert.equal(harness.requestRenders() - before, activityOnly, "only the activity line's frames");
+			timerClock.tick(ANIMATION_WINDOW_MS);
+			assert.equal(harness.requestRenders() - before, 0, "hidden rows ask for no frames");
 
 			// Shown again: every row, in the style, with the running call pulsing again.
 			state.enabled = false;

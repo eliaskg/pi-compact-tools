@@ -1,11 +1,11 @@
 import "./pinned-themes.ts";
 import { uiRenderers } from "./ui-renderers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AssistantMessageComponent, CustomMessageComponent, UserMessageComponent, initTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, CustomMessageComponent, initTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
 import { MouseRegion, Spacer, stripTerminalSequences, Text, visibleWidth } from "@earendil-works/pi-tui";
@@ -23,9 +23,7 @@ import { DEFAULT_CONFIG, loadConfig, mergeConfig } from "../extensions/compact-t
 import { patchToolRows } from "../extensions/compact-tools-custom.ts";
 import { findAnchorTop, ViewportKeeper } from "../extensions/compact-tools-viewport.ts";
 import { hookMethod } from "../extensions/compact-tools-hook.ts";
-import { compareVersions, releaseMarkdown, releaseSections, releasesToShow, showReleaseNotice } from "../extensions/compact-tools-release.ts";
 import { isIntermediateAssistant, parseSilentArgument, patchRender, renderAnswerOnly, renderWithoutNotices, SilentModeController } from "../extensions/compact-tools-silent.ts";
-import { attachActivityToUserMessage, bottomAlignTranscript, dotIntensities, frameChanges, renderActivityDots, SilentActivityAnimator } from "../extensions/compact-tools-activity.ts";
 import { classifyShellCommand, claudeArgument, claudeCommand, claudeFailure, claudeOutcome, claudeTitle } from "../extensions/compact-tools-claude.ts";
 import { countGroup, EXPAND_HINT, groupChildren, groupFailures, groupHint, summarizeGroup, ToolGroupComponent, type ToolRowLike } from "../extensions/compact-tools-grouping.ts";
 import { languageFromPath, languageFromShebang, resolveLanguage } from "../extensions/compact-tools-language.ts";
@@ -58,7 +56,6 @@ import {
 } from "../extensions/compact-tools-layout.ts";
 import { highlightMarkdown } from "../extensions/compact-tools-markdown.ts";
 import { completionPainter, paintChrome } from "../extensions/compact-tools-palette.ts";
-import { formatToolProgress, glowProgressMessage, ProgressController } from "../extensions/compact-tools-progress.ts";
 import { ToolRuntime } from "../extensions/compact-tools-runtime.ts";
 import {
 	classifyThinkingToggleInput,
@@ -125,129 +122,6 @@ test("parses display mode and keeps the previous value when invalid", () => {
 	assert.equal(mergeConfig(silent, { previewLines: 4 }, "test").mode, "silent");
 });
 
-test("shows what changed once, like Pi's own What's New, and only as a conversation starts", () => {
-	initTheme("dark", false);
-	const dir = mkdtempSync(join(tmpdir(), "compact-tools-notices-"));
-	const notes = { "0.9.0": ["Older"], "0.10.0": ["Silent mode", "Custom tools"], "0.11.0": ["Next"] };
-	const theme = fakeTheme({ fg: (_color: string, text: string) => text, bold: (text: string) => text });
-	const chat = { children: [] as unknown[], addChild(component: unknown) { this.children.push(component); } };
-	const tui = { children: [{ children: [{}, {}, chat] }] };
-	const notices: string[] = [];
-	let entries: Array<{ type: string }> = [];
-	const ctx = {
-		mode: "tui",
-		sessionManager: { getEntries: () => entries },
-		ui: {
-			theme,
-			notify: (text: string) => notices.push(text),
-			setWidget: (_key: string, factory: unknown) => {
-				if (typeof factory === "function") factory(tui, theme);
-			},
-		},
-	} as unknown as ExtensionContext;
-	const shownText = () => (chat.children as Array<{ render(width: number): string[] }>)
-		.flatMap((child) => child.render(60)).map((line) => line.replace(/\x1b\[[0-9;]*m/gu, "").trim()).filter(Boolean);
-	try {
-		assert.equal(showReleaseNotice({ ...ctx, mode: "print" } as ExtensionContext, "0.10.0", dir, notes), false);
-		// A resumed conversation keeps the notes for the next new one.
-		entries = [{ type: "message" }];
-		assert.equal(showReleaseNotice(ctx, "0.10.0", dir, notes), false);
-		entries = [];
-		// With nothing shown before, the installed version's notes appear once, as a bordered block.
-		assert.equal(showReleaseNotice(ctx, "0.10.0", dir, notes), true);
-		const block = shownText();
-		assert.equal(block[0], "─".repeat(60));
-		assert.equal(block[1], "What's new in pi-compact-tools v0.10.0");
-		assert.deepEqual(block.slice(2, 4), ["- Silent mode", "- Custom tools"], "a plain list reads as Markdown items, like Pi's changelog");
-		assert.equal(block.at(-1), "─".repeat(60));
-		assert.ok(!block.some((line) => line.includes("Older")), "versions before the first notice stay quiet");
-		assert.equal(notices.length, 0);
-		// A new session or /reload must not repeat it.
-		assert.equal(showReleaseNotice(ctx, "0.10.0", dir, notes), false);
-		// Updating later shows only what is new since.
-		chat.children.length = 0;
-		assert.equal(showReleaseNotice(ctx, "0.11.0", dir, notes), true);
-		assert.deepEqual(shownText().filter((line) => line.startsWith("What's new")), ["What's new in pi-compact-tools v0.11.0"]);
-		assert.equal(showReleaseNotice(ctx, "../escape", dir, notes), false);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("notes grouped under New, Fix, and Deprecated show under ### headings, and empty groups stay out", () => {
-	initTheme("dark", false);
-	const dir = mkdtempSync(join(tmpdir(), "compact-tools-sections-"));
-	const notes = {
-		"0.13.0": ["Plain list"],
-		"0.14.0": { New: ["Codex style"], Fix: ["First Enter runs it", "Narrow panes"], Deprecated: [] },
-		"0.14.1": { New: [], Fix: [], Deprecated: [] },
-	};
-	assert.deepEqual(releaseSections(notes["0.14.0"]), [
-		{ title: "New", notes: ["Codex style"] }, { title: "Fix", notes: ["First Enter runs it", "Narrow panes"] },
-	]);
-	assert.deepEqual(releaseSections(notes["0.13.0"]), [{ notes: ["Plain list"] }], "an older plain list has no heading");
-	assert.deepEqual(releasesToShow("0.14.1", notes, "0.13.0").map(({ version }) => version), ["0.14.0"],
-		"a release whose groups are all empty is quiet");
-	const theme = fakeTheme({ fg: (_color: string, text: string) => text, bold: (text: string) => text });
-	const chat = { children: [] as unknown[], addChild(component: unknown) { this.children.push(component); } };
-	const ctx = {
-		mode: "tui",
-		sessionManager: { getEntries: () => [] },
-		ui: {
-			theme,
-			notify: () => {},
-			setWidget: (_key: string, factory: unknown) => { if (typeof factory === "function") factory({ children: [{ children: [{}, chat] }] }, theme); },
-		},
-	} as unknown as ExtensionContext;
-	assert.equal(showReleaseNotice(ctx, "0.14.0", dir, notes), true);
-	const block = (chat.children as Array<{ render(width: number): string[] }>).flatMap((child) => child.render(60))
-		.map((line) => line.replace(/\x1b\[[0-9;]*m/gu, "").trim()).filter(Boolean);
-	// Drawn by Pi's own Markdown, as its What's New draws the changelog.
-	assert.deepEqual(block.slice(1, -1), [
-		"What's new in pi-compact-tools v0.14.0", "### New", "- Codex style", "### Fix", "- First Enter runs it", "- Narrow panes",
-	]);
-	assert.equal(releaseMarkdown(notes["0.14.0"]), "### New\n\n- Codex style\n\n### Fix\n\n- First Enter runs it\n- Narrow panes");
-	// Without a chat to draw in, the same groups go into one notification.
-	const notices: string[] = [];
-	const plain = { ...ctx, ui: { ...ctx.ui, notify: (text: string) => notices.push(text), setWidget: () => {} } } as unknown as ExtensionContext;
-	assert.equal(showReleaseNotice(plain, "0.14.0", mkdtempSync(join(tmpdir(), "compact-tools-sections-")), notes), true);
-	assert.equal(notices[0], "pi-compact-tools v0.14.0\n\n### New\n\n- Codex style\n\n### Fix\n\n- First Enter runs it\n- Narrow panes");
-});
-
-test("lists every release skipped since the last notice, newest first", () => {
-	const notes = { "0.9.0": ["a"], "0.10.0": ["b"], "0.10.1": [], "0.11.0": ["c"], "0.12.0": ["d"] };
-	assert.deepEqual(releasesToShow("0.11.0", notes, "0.9.0").map(({ version }) => version), ["0.11.0", "0.10.0"]);
-	assert.deepEqual(releasesToShow("0.11.0", notes, undefined).map(({ version }) => version), ["0.11.0"]);
-	assert.deepEqual(releasesToShow("0.11.0", notes, "0.11.0"), []);
-	assert.ok(compareVersions("0.10.0", "0.9.3") > 0, "versions compare numerically");
-	// An empty list is a quiet release: updating to it shows nothing new...
-	const quiet = { "0.10.0": ["Silent mode"], "0.10.1": [] };
-	assert.deepEqual(releasesToShow("0.10.1", quiet, "0.10.0"), []);
-	// ...but a first notice still shows the newest release that has notes.
-	assert.deepEqual(releasesToShow("0.10.1", quiet, undefined).map(({ version }) => version), ["0.10.0"]);
-});
-
-test("falls back to a status line when Pi's chat can't be reached", () => {
-	const dir = mkdtempSync(join(tmpdir(), "compact-tools-notices-"));
-	const notices: string[] = [];
-	const ctx = {
-		mode: "tui",
-		sessionManager: { getEntries: () => [] },
-		ui: {
-			theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-			notify: (text: string) => notices.push(text),
-			setWidget: (_key: string, factory: unknown) => {
-				if (typeof factory === "function") factory({}, {});
-			},
-		},
-	} as unknown as ExtensionContext;
-	try {
-		assert.equal(showReleaseNotice(ctx, "0.10.0", dir, { "0.10.0": ["Silent mode"] }), true);
-		assert.deepEqual(notices, ["pi-compact-tools v0.10.0\n\n- Silent mode"]);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
 test("treats every tool-handoff assistant turn as intermediate, however it ended", () => {
 	assert.equal(isIntermediateAssistant({ hasToolCalls: true }), true);
 	assert.equal(isIntermediateAssistant({ hasToolCalls: false }), false);
@@ -330,7 +204,7 @@ test("/silent offers on and off, but nothing already typed in full, so Enter run
 		},
 		registerShortcut: () => {},
 	} as unknown as ExtensionAPI;
-	new SilentModeController(pi, () => {});
+	new SilentModeController(pi);
 	assert.deepEqual(await completions!(""), [{ value: "on", label: "on" }, { value: "off", label: "off" }]);
 	assert.deepEqual(await completions!("o"), [{ value: "on", label: "on" }, { value: "off", label: "off" }]);
 	assert.deepEqual(await completions!("of"), [{ value: "off", label: "off" }]);
@@ -381,8 +255,7 @@ test("restores hidden rows when silent mode is disposed and preserves the choice
 		{ customType: "notice", content: "Content ready" } as never,
 		() => ({ render: () => ["Content ready"], invalidate() {} }),
 	);
-	let visibleCount = 0;
-	const controller = new SilentModeController(pi, () => { visibleCount++; });
+	const controller = new SilentModeController(pi);
 	controller.bind(ctx, "normal", false);
 	assert.ok(assistant.render(80).length > 0);
 	assert.ok(notice.render(80).length > 0);
@@ -394,7 +267,6 @@ test("restores hidden rows when silent mode is disposed and preserves the choice
 	assert.deepEqual(visible(failedAnswer), ["Partial answer"], "the answer stays, its error notice goes");
 	assert.deepEqual(failedHandoff.render(80), [], "a failed tool handoff is hidden like any other");
 	await command!("off", ctx);
-	assert.equal(visibleCount, 1, "turning silent off can show a deferred release notice");
 	assert.ok(visible(failedAnswer).some((line) => line.startsWith("Error: 400")), "off restores the notice");
 	await command!("on", ctx);
 	assert.deepEqual(notifications, []);
@@ -414,135 +286,6 @@ test("restores hidden rows when silent mode is disposed and preserves the choice
 	controller.dispose();
 	assert.ok(assistant.render(80).length > 0);
 	assert.ok(notice.render(80).length > 0);
-});
-
-test("runs a light along a line beneath the submitted prompt and removes it after the turn", async () => {
-	const theme = fakeTheme({ fg: (_color: string, text: string) => text });
-	const brightest = (frame: number) => {
-		const intensities = dotIntensities(frame);
-		return intensities.indexOf(Math.max(...intensities));
-	};
-	// The light runs along a nine-cell line to its end and back over one 26-frame breath.
-	assert.equal(dotIntensities(0).length, 9);
-	assert.deepEqual([0, 13, 26].map(brightest), [0, 8, 0]);
-	const outward = Array.from({ length: 14 }, (_, frame) => brightest(frame));
-	assert.ok(outward.every((dot, index) => index === 0 || dot >= outward[index - 1]!), "it moves one way, then back");
-	// Fast through the middle, slow at the ends.
-	const step = (frame: number) => Math.abs(brightest(frame + 1) - brightest(frame));
-	assert.ok(step(6) >= 1 && step(0) === 0, "it lingers at the start and speeds up in the middle");
-	// The head is the only full-brightness cell, nothing ahead of it is ever lit, and
-	// the tail behind it is unbroken even where the head crossed two cells in one frame.
-	// Frame 0 is the head arriving back at the start, so it was last moving left.
-	let direction = -1;
-	let previousHead = 0;
-	for (let frame = 0; frame < 52; frame++) {
-		const cells = dotIntensities(frame);
-		const head = cells.indexOf(1);
-		assert.ok(head >= 0, `frame ${frame} has a head`);
-		if (head !== previousHead) {
-			assert.ok(Math.abs(head - previousHead) <= 2, `frame ${frame} moves at most two cells`);
-			direction = head > previousHead ? 1 : -1;
-		}
-		previousHead = head;
-		assert.ok(cells.every((value, index) => (index - head) * direction <= 0 || value === 0), `frame ${frame}: dark ahead`);
-		const tail = cells.map((value, index) => ({ value, index })).filter(({ value }) => value > 0).map(({ index }) => index);
-		assert.equal(tail.length, Math.max(...tail) - Math.min(...tail) + 1, `frame ${frame}: the tail has no gaps`);
-	}
-	// A passed cell fades as an afterimage instead of going dark at once.
-	const trail = [3, 4, 5, 6].map((frame) => dotIntensities(frame)[0]!);
-	assert.ok(trail.every((value, index) => index === 0 || value < trail[index - 1]!), "the afterimage only fades");
-	assert.ok(trail.at(-1)! > 0.1, "and it lingers while the light moves on");
-	// The tail dims in steps, never dropping out, even when the light turns around.
-	for (let frame = 0; frame < 26; frame++) {
-		const now = dotIntensities(frame);
-		const next = dotIntensities(frame + 1);
-		assert.ok(now.every((value, index) => value - next[index]! <= 0.45), `frame ${frame}`);
-	}
-	// A frame identical to the last asks for no repaint; this run changes every frame.
-	assert.equal(frameChanges(0), true);
-	// One unbroken line from column 3, spanning the "Thinking…" label below it.
-	assert.equal(renderActivityDots(0, 80, theme)[0], "   ━━━━━━━━━");
-	assert.equal(renderActivityDots(0, 80, theme)[0]!.indexOf("━"), "── Thinking…".indexOf("T"));
-	assert.equal(renderActivityDots(0, 80, theme)[0]!.trim().length, "Thinking…".length);
-	for (let frame = 0; frame < 26; frame++) {
-		assert.equal(visibleWidth(renderActivityDots(frame, 80, theme)[0]!), 12, `frame ${frame} keeps its width`);
-	}
-	// Pi's padding row stays inside the prompt box; the dots go on the row after it.
-	assert.deepEqual(attachActivityToUserMessage(["prompt", "\x1b]133;B\x07\x1b]133;C\x07    "], "dots"),
-		["prompt", "\x1b]133;B\x07\x1b]133;C\x07    ", "dots"]);
-	assert.deepEqual(bottomAlignTranscript(["prompt", "sweep"], 5), ["", "", "", "prompt", "sweep"]);
-	assert.deepEqual(bottomAlignTranscript(["prompt", "sweep"], 2), ["prompt", "sweep"]);
-	for (const width of [1, 4, 12, 80]) {
-		const lines = renderActivityDots(2, width, theme);
-		assert.equal(lines.length, 1);
-		assert.ok(visibleWidth(lines[0]!) <= width);
-	}
-
-	const handlers = new Map<string, (event?: any) => void>();
-	const pi = { on: (name: string, handler: (event?: any) => void) => handlers.set(name, handler) } as unknown as ExtensionAPI;
-	let currentWidget: unknown;
-	let placement: string | undefined;
-	const context = {
-		isIdle: () => true,
-		ui: {
-			theme,
-			setWidget: (_key: string, content: unknown, options: { placement: string }) => {
-				currentWidget = content;
-				placement = options.placement;
-			},
-		},
-	} as unknown as ExtensionContext;
-	const activity = new SilentActivityAnimator(pi);
-	activity.bind(context);
-	activity.setEnabled(true);
-	assert.equal(currentWidget, undefined);
-	handlers.get("agent_start")?.();
-	assert.equal(placement, "belowEditor");
-	assert.equal(typeof currentWidget, "function");
-	const document = { render: (_width: number) => ["prompt", "sweep"] };
-	const scroll = { child: document, viewportHeight: 5 };
-	// Pi mounts transcript, pending, status, widgets above (a lone spacer), editor,
-	// widgets below, and footer, in that order, in regular and fullscreen mode alike.
-	const gap = { children: [new Spacer(1)] as unknown[], render(width: number) { return this.children.flatMap((child: any) => child.render(width)); } };
-	const tui = { requestRender() {}, getPrimaryScrollView: () => scroll, children: [{}, {}, {}, gap, {}, {}, {}] };
-	const component = (currentWidget as unknown as (tui: any, theme: Theme) => Component)(tui, theme);
-	assert.deepEqual(gap.render(80), [], "the dots replace the blank row above the editor while they animate");
-	gap.children.push({ render: () => ["widget"] });
-	assert.equal(gap.render(80).length, 2, "a real widget above the editor keeps its spacing");
-	gap.children.pop();
-	assert.equal(component.render(80).length, 0);
-	assert.deepEqual(document.render(80), ["", "", "", "prompt", "sweep"]);
-	initTheme("dark", false);
-	const earlier = new UserMessageComponent("earlier prompt");
-	const latest = new UserMessageComponent("latest prompt");
-	earlier.render(80);
-	const normalLatest = latest.render(80);
-	await Promise.resolve();
-	assert.notEqual(earlier.render(80).at(-1), renderActivityDots(0, 80, theme)[0]);
-	const animatedLatest = latest.render(80);
-	assert.equal(animatedLatest.length, normalLatest.length + 1, "the dots add a row and keep Pi's bottom padding");
-	assert.deepEqual(animatedLatest.slice(0, -1), normalLatest);
-	assert.equal(stripTerminalSequences(animatedLatest.at(-1)!).trim(), renderActivityDots(0, 80, theme)[0]!.trim());
-	// The dots step aside once the answer streams, and return when the assistant goes back to work.
-	handlers.get("message_update")?.({ assistantMessageEvent: { type: "text_delta" } });
-	assert.equal(currentWidget, undefined, "no dots under a streaming answer");
-	assert.deepEqual(latest.render(80), normalLatest);
-	handlers.get("message_update")?.({ assistantMessageEvent: { type: "toolcall_start" } });
-	assert.equal(typeof currentWidget, "function", "a tool call brings the dots back");
-	(currentWidget as unknown as (tui: any, theme: Theme) => Component)(tui, theme);
-	handlers.get("message_update")?.({ assistantMessageEvent: { type: "text_start" } });
-	assert.equal(currentWidget, undefined);
-	handlers.get("turn_start")?.();
-	assert.equal(typeof currentWidget, "function", "a new turn brings the dots back");
-	(currentWidget as unknown as (tui: any, theme: Theme) => Component)(tui, theme);
-	handlers.get("agent_end")?.();
-	assert.equal(typeof currentWidget, "function", "the activity survives a low-level run ending");
-	handlers.get("agent_settled")?.();
-	assert.equal(currentWidget, undefined);
-	assert.equal(gap.render(80).length, 1, "the editor spacing returns after settlement");
-	assert.deepEqual(document.render(80), ["prompt", "sweep"]);
-	assert.notEqual(latest.render(80).at(-1), renderActivityDots(0, 80, theme)[0]);
-	activity.dispose();
 });
 
 test("summarizes failure diagnostics from file and shell output", () => {
@@ -1271,73 +1014,6 @@ test("registers renderers again after every session replacement", async () => {
 	else process.env[agentDirVariable] = previousAgentDir;
 });
 
-test("keeps the progress controller inert until it is bound to a TUI", () => {
-	const messages: Array<string | undefined> = [];
-	const handlers = new Map<string, (event: any) => void>();
-	const pi = {
-		on: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
-	} as unknown as ExtensionAPI;
-	const controller = new ProgressController(pi);
-
-	// Never bound: every handler must be a no-op rather than relying on a
-	// downstream guard inside setMessage.
-	handlers.get("agent_start")?.({});
-	handlers.get("message_update")?.({ assistantMessageEvent: { type: "text_delta" } });
-	handlers.get("tool_execution_start")?.({ toolCallId: "1", toolName: "read", args: { path: "a.ts" } });
-	handlers.get("tool_execution_end")?.({ toolCallId: "1" });
-	handlers.get("agent_settled")?.({});
-	assert.equal(messages.length, 0, "an unbound controller must not touch the working row");
-
-	const theme = fakeTheme({
-		fg: (_color: string, text: string) => text,
-		bold: (text: string) => text,
-		getColorMode: () => "truecolor",
-	});
-	controller.bind({
-		ui: {
-			theme,
-			setWorkingVisible: () => {},
-			setWorkingMessage: (message?: string) => messages.push(message),
-			setWorkingIndicator: () => {},
-		},
-	} as unknown as ExtensionContext);
-	handlers.get("agent_start")?.({});
-	assert.deepEqual(messages, ["Thinking…"]);
-
-	// Disposed again: later events must not reach the detached context.
-	controller.dispose();
-	messages.length = 0;
-	handlers.get("tool_execution_start")?.({ toolCallId: "2", toolName: "bash", args: { command: "ls" } });
-	handlers.get("agent_settled")?.({});
-	assert.equal(messages.length, 0, "a disposed controller must not touch the working row");
-});
-
-test("uses semantic progress labels without exposing invocation details", () => {
-	assert.equal(formatToolProgress("read", { path: "src/index.ts" }), "Reading file…");
-	assert.equal(formatToolProgress("bash", { command: "npm run check\nnext" }), "Running command…");
-	assert.equal(formatToolProgress("hrbook_search", { query: "secret" }), "Using hrbook search…");
-	assert.equal(formatToolProgress("getUserById", {}), "Using get User By Id…");
-	assert.equal(
-		formatToolProgress("mcp__jira_rca_mcp", { tool: "jira_search", args: { query: "secret" } }),
-		"Using jira search…",
-	);
-	assert.equal(formatToolProgress("mcp", { tool: "hrbook_verify", args: { source: "secret" } }), "Using hrbook verify…");
-	assert.equal(formatToolProgress("custom_tool", { tool: "do_not_expose" }), "Using custom tool…");
-	assert.equal(formatToolProgress("mcp", { tool: "bad\u001b[31m_name" }), "Using bad name…");
-	assert.equal(formatToolProgress("", {}), "Running tool…");
-});
-
-test("uses indexed ANSI colors for the glow in 256-color mode", () => {
-	const theme = fakeTheme({
-		fg: (_color: string, text: string) => text,
-		getFgAnsi: () => "\x1b[38;5;110m",
-		getColorMode: () => "256color",
-	});
-	const rendered = glowProgressMessage("Glow", 2, theme, "high");
-	assert.match(rendered, /\x1b\[38;5;\d+mG\x1b\[39m/u);
-	assert.doesNotMatch(rendered, /\x1b\[38;2;/u);
-});
-
 test("resolves languages Pi's extension table misses, without guessing", () => {
 	// Pi's own mapping still wins where it applies.
 	assert.equal(languageFromPath("src/index.ts"), "typescript");
@@ -1438,8 +1114,6 @@ test("a theme from Pi before 0.99 derives the same colors and follows a theme sw
 	const modern = fakeTheme({ ...legacy as unknown as Record<string, unknown> });
 	const drawings = (theme: Theme) => [
 		paintChrome(theme, " │ "),
-		glowProgressMessage("Working", 3, theme, "high"),
-		renderActivityDots(5, 40, theme, "high")[0],
 	];
 	const before = drawings(legacy);
 	assert.deepEqual(before, drawings(modern), "the same palette draws the same, with or without theme.colors");
@@ -1475,153 +1149,6 @@ test("derived colors are written as Pi 0.99 writes colors, for the terminal's co
 			}
 		}
 	}
-});
-
-test("scales the working-label glow to its length and follows the theme's background", () => {
-	const requestedColors: string[] = [];
-	const rampTheme = (ansi: Record<string, string>) => fakeTheme({
-		fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-		getFgAnsi: (color: string) => {
-			requestedColors.push(color);
-			return ansi[color] ?? "";
-		},
-	});
-	const luminance = (color: number[]) => color[0]! * 0.299 + color[1]! * 0.587 + color[2]! * 0.114;
-	const glowColors = (rendered: string) =>
-		[...rendered.matchAll(/38;2;(\d+);(\d+);(\d+)m/gu)].map((match) => match.slice(1).map(Number));
-
-	const dark = rampTheme(THEME_RAMP_ANSI);
-	const short = glowProgressMessage("Glow", 2, dark, "max");
-	const long = glowProgressMessage("0123456789abcdef", 8, dark, "max");
-	// The sweep is built from the theme's color for the active thinking level, never a fixed white.
-	assert.deepEqual([...new Set(requestedColors)].sort(), ["text", "thinkingMax"]);
-	const shortColors = glowColors(short);
-	const longColors = glowColors(long);
-	assert.equal(shortColors.length, 4);
-	assert.equal(longColors.length, 16);
-	// The highlight is a single peak that rides the frame, and the radius grows with length.
-	const peak = (colors: number[][]) => colors.reduce(
-		(best, color, index) => luminance(color) > luminance(colors[best]!) ? index : best,
-		0,
-	);
-	assert.equal(peak(shortColors), 0);
-	assert.equal(peak(longColors), 4);
-	const lit = (colors: number[][]) => colors.filter((color) => luminance(color) > luminance(colors.at(-1)!)).length;
-	assert.ok(lit(longColors) > lit(shortColors));
-	// On a dark theme the highlight brightens, and it stays inside the derived endpoints.
-	assert.ok(longColors.every((color) => luminance(color) >= luminance(longColors.at(-1)!) - 1));
-	assert.ok(luminance(longColors[4]!) > luminance(longColors.at(-1)!));
-
-	requestedColors.length = 0;
-	const light = rampTheme({
-		text: "\x1b[38;2;31;35;40m",
-		muted: "\x1b[38;2;108;108;108m",
-		dim: "\x1b[38;2;118;118;118m",
-		thinkingMax: "\x1b[38;2;175;0;95m",
-	});
-	// A light background inverts the sweep: the highlight has to darken to stay readable.
-	const onLight = glowColors(glowProgressMessage("0123456789abcdef", 8, light, "max"));
-	assert.equal(onLight.length, 16);
-	assert.ok(luminance(onLight[4]!) < luminance(onLight.at(-1)!));
-	assert.ok(onLight.every((color) => luminance(color) <= luminance(onLight.at(-1)!) + 1));
-});
-
-test("survives a theme that paints a level black or does not know it at all", () => {
-	const theme = fakeTheme({
-		fg: (color: string, text: string) => {
-			// Pi throws from fg() too, so a fallback must never name the color that just failed.
-			if (!THEME_RAMP_ANSI[color] && color !== "text" && color !== "muted") {
-				throw new Error(`Unknown theme color: ${color}`);
-			}
-			return `<${color}>${text}</${color}>`;
-		},
-		getFgAnsi: (color: string) => {
-			if (color === "thinkingOff") return "\x1b[38;2;0;0;0m";
-			if (color === "thinkingMax") throw new Error("Unknown theme color: thinkingMax");
-			return THEME_RAMP_ANSI[color] ?? "";
-		},
-		getColorMode: () => "truecolor",
-	});
-
-	// Pure black carries no ratio to scale, so the floor has to produce it from the poles.
-	const channels = [...glowProgressMessage("Working", 0, theme, "off").matchAll(/38;2;(\d+);(\d+);(\d+)/gu)]
-		.flatMap((match) => match.slice(1).map(Number));
-	assert.ok(channels.length > 0);
-	assert.ok(channels.every((value) => Number.isFinite(value) && value >= 0 && value <= 255));
-	assert.ok(channels.some((value) => value > 60), "a level painted black must still be readable");
-
-	// An unresolvable color falls back to names every theme carries, without rethrowing.
-	assert.match(glowProgressMessage("Working", 0, theme, "max"), /<muted>|<text>/u);
-});
-
-test("repaints the working label in the session's thinking level", () => {
-	const handlers = new Map<string, (event: any) => void>();
-	const pi = {
-		on: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
-		getThinkingLevel: () => "low",
-	} as unknown as ExtensionAPI;
-	const messages: Array<string | undefined> = [];
-	const theme = fakeTheme({
-		fg: (color: string, text: string) => `${THEME_RAMP_ANSI[color] ?? ""}${text}\x1b[39m`,
-		getFgAnsi: (color: string) => THEME_RAMP_ANSI[color] ?? "",
-		getColorMode: () => "truecolor",
-	});
-	const controller = new ProgressController(pi);
-	controller.bind({
-		ui: {
-			theme,
-			setWorkingVisible: () => {},
-			setWorkingMessage: (message?: string) => messages.push(message),
-			setWorkingIndicator: () => {},
-		},
-	} as unknown as ExtensionContext);
-
-	const crest = (label: string) => label.match(/38;2;(\d+);(\d+);(\d+)/u)![0];
-	handlers.get("agent_start")?.({});
-	const atLow = crest(messages.at(-1)!);
-
-	// A level change recolors the label in place, without restarting the sweep.
-	handlers.get("thinking_level_select")?.({ level: "max", previousLevel: "low" });
-	const atMax = crest(messages.at(-1)!);
-	assert.notEqual(atMax, atLow);
-	assert.equal(stripTerminalSequences(messages.at(-1)!), "Thinking…");
-
-	// The same level again is not a change, so nothing is repainted.
-	const before = messages.length;
-	handlers.get("thinking_level_select")?.({ level: "max", previousLevel: "max" });
-	assert.equal(messages.length, before);
-	controller.dispose();
-});
-
-test("keeps one glyph-free Pi working row across thinking and tool progress", () => {
-	const handlers = new Map<string, (event: any) => void>();
-	const pi = {
-		on: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
-	} as unknown as ExtensionAPI;
-	const messages: Array<string | undefined> = [];
-	let indicator: { frames: string[]; intervalMs?: number } | undefined;
-	const theme = fakeTheme({ fg: (_color: string, text: string) => text, bold: (text: string) => text });
-	const controller = new ProgressController(pi);
-	controller.bind({
-		ui: {
-			theme,
-			setWorkingVisible: () => {},
-			setWorkingMessage: (message?: string) => messages.push(message),
-			setWorkingIndicator: (value?: typeof indicator) => { indicator = value; },
-		},
-	} as unknown as ExtensionContext);
-	assert.deepEqual(indicator?.frames, []);
-	handlers.get("agent_start")?.({});
-	handlers.get("message_update")?.({ assistantMessageEvent: { type: "thinking_delta" } });
-	handlers.get("message_update")?.({ assistantMessageEvent: { type: "thinking_delta" } });
-	handlers.get("tool_execution_start")?.({ toolCallId: "1", toolName: "read", args: { path: "a.ts" } });
-	handlers.get("tool_execution_end")?.({ toolCallId: "1" });
-	const beforeAgentEnd = messages.length;
-	handlers.get("agent_end")?.({});
-	assert.equal(messages.length, beforeAgentEnd, "a low-level run may still retry or continue");
-	handlers.get("agent_settled")?.({});
-	assert.deepEqual(messages, ["Thinking…", "Reading file…", "Processing results…", undefined]);
-	controller.dispose();
 });
 
 test("caches expanded container lines by width", () => {
@@ -2032,30 +1559,6 @@ test("hides Pi's own notice lines from the chat and restores its children", () =
 	assert.deepEqual(renderWithoutNotices(chat, 80, render), ["PROMPT", "ANSWER"]);
 	assert.equal(chat.children, children, "the chat keeps its own children");
 	assert.deepEqual(renderWithoutNotices({ children: [user, answer] }, 80, () => ["unchanged"]), ["unchanged"]);
-});
-
-test("shares one animation clock that stops when nothing listens", async () => {
-	const { install } = await import("@sinonjs/fake-timers");
-	const clock = install({ toFake: ["setInterval", "clearInterval"] });
-	const { onTick, TICK_MS } = await import("../extensions/compact-tools-clock.ts");
-	let label = 0;
-	let line = 0;
-	const stopLabel = onTick(() => label++);
-	const stopLine = onTick(() => line++);
-	try {
-		clock.tick(TICK_MS * 2 + 30);
-		stopLabel();
-		stopLine();
-		// Both animations advanced on the same ticks, so Pi repaints once per tick for both.
-		assert.ok(label >= 2 && label === line, `label ${label}, line ${line}`);
-		const settled = label;
-		clock.tick(TICK_MS + 20);
-		assert.equal(label, settled, "the clock stops once idle");
-	} finally {
-		stopLabel();
-		stopLine();
-		clock.uninstall();
-	}
 });
 
 test("counts the lines an edit added and removed from Pi's diff", () => {

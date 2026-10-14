@@ -1,4 +1,4 @@
-import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
 	indicatorGlyph,
 	indicatorStrength,
@@ -9,7 +9,6 @@ import {
 import {
 	colorizeRgb,
 	interpolateRgb,
-	liftContrast,
 	neutralizeRgb,
 	paletteOf,
 	rgbPainter,
@@ -26,16 +25,12 @@ import {
  * still sized for body text, a step louder than a rail should be; and a hard-coded white
  * highlight disappears entirely on a light background. So each value here takes a theme
  * color for its hue and then places it: chrome and the indicator give up most of their
- * saturation and are pulled into a fixed contrast band, while the working label keeps its
- * hue exactly and is moved only in brightness. Everything is measured against the theme
+ * saturation and are pulled into a fixed contrast band. Everything is measured against the theme
  * background, so the same code reads the same way on light and dark alike: against a light
  * background the moves invert, and standing out means going darker.
  */
 
 type ContrastBand = { color: ThemeColor; keepHue: number; minimum: number; maximum: number };
-
-/** A band with no color attached, for a derivation that supplies its own source. */
-type ContrastRange = { minimum: number; maximum: number };
 
 /**
  * A quiet frame tone for rails, connectors, and separators. Completion metadata
@@ -46,36 +41,6 @@ const COMPLETION: ContrastBand = { ...CHROME, minimum: 0.26, maximum: 0.32 };
 /** The indicator breathes either side of the chrome tone, dipping below it and peaking above. */
 const PULSE_LOW: ContrastBand = { color: "dim", keepHue: 0.4, minimum: 0.18, maximum: 0.3 };
 const PULSE_HIGH: ContrastBand = { color: "muted", keepHue: 0.4, minimum: 0.4, maximum: 0.6 };
-/**
- * The working label is painted in the session's own thinking level, the piece of state the
- * row is already reporting on. Themes size those colors for a one-word status chip, so the
- * label takes a brighter shade of the same color and the sweep lifts it again: the row
- * carries the level's hue at a weight that reads across the width of a sentence, and the
- * highlight is that color catching light rather than white laid over it. Both lifts are a
- * share of the light left between the color and full contrast, so a level the theme
- * already paints brightly moves least.
- */
-const GLOW_REST_LIFT = 0.3;
-const GLOW_CREST_LIFT = 0.72;
-/** Themes paint the lowest levels at rail weight; a floor keeps the label off the background. */
-const GLOW_FLOOR: ContrastRange = { minimum: 0.4, maximum: 1 };
-
-export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
-
-const THINKING_LEVEL_COLOR = {
-	off: "thinkingOff",
-	minimal: "thinkingMinimal",
-	low: "thinkingLow",
-	medium: "thinkingMedium",
-	high: "thinkingHigh",
-	xhigh: "thinkingXhigh",
-	max: "thinkingMax",
-} as const satisfies Record<ThinkingLevel, ThemeColor>;
-
-/** The theme color a thinking level is painted with. */
-export function thinkingLevelColor(level: ThinkingLevel): ThemeColor {
-	return THINKING_LEVEL_COLOR[level] ?? "thinkingMedium";
-}
 
 /**
  * Derived colors, kept for as long as the palette they came from. `/theme` swaps the
@@ -165,35 +130,5 @@ function runningPulse(theme: Theme, glyph: string): readonly string[] {
 				? colorizeRgb(theme, interpolateRgb(pulse.from, pulse.to, indicatorStrength("running", step)), glyph)
 				: theme.fg(indicatorTone("running", step), glyph);
 		});
-	});
-}
-
-/** How far the brightest activity dot moves from the level's color toward the label's crest. */
-const ACTIVITY_CREST_MIX = 0.3;
-/** Contrast against the background of an unlit dot: the level's hue, barely there. */
-const ACTIVITY_UNLIT = 0.05;
-
-/**
- * Silent-mode activity dots: an unlit dot is the thinking level's own hue faded
- * almost into the background, and a lit one shows that hue lifted a little. The
- * label's full crest washes every level toward the same near-white.
- */
-export function activityGlow(theme: Theme, level: ThinkingLevel): ColorRamp | undefined {
-	return perPalette(theme, `activity:${level}`, () => {
-		const glow = progressGlow(theme, level);
-		if (!glow) return undefined;
-		const lit = interpolateRgb(glow.from, glow.to, ACTIVITY_CREST_MIX);
-		return { from: withContrast(theme, lit, ACTIVITY_UNLIT, ACTIVITY_UNLIT), to: lit };
-	});
-}
-
-/** Sweep endpoints for the working label at a thinking level, resting color to crest. */
-export function progressGlow(theme: Theme, level: ThinkingLevel): ColorRamp | undefined {
-	return perPalette(theme, `progress:${level}`, () => {
-		const raw = themeColorRgb(theme, thinkingLevelColor(level));
-		if (!raw) return undefined;
-		const lifted = liftContrast(theme, raw, GLOW_REST_LIFT);
-		const from = withContrast(theme, lifted, GLOW_FLOOR.minimum, GLOW_FLOOR.maximum);
-		return { from, to: liftContrast(theme, from, GLOW_CREST_LIFT) };
 	});
 }
